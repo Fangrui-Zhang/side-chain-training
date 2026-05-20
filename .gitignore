@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data and generated artifacts
+data/
+outputs/
+runs/
+checkpoints/
+*.npz
+*.parquet
+*.pt
+*.pth
+*.ckpt
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary notebooks/checks
+.ipynb_checkpoints/
