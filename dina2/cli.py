@@ -6,7 +6,7 @@ import argparse
 
 from .embeddings import ESM2_LAYER, ESM2_MODEL, extract_esm2_embeddings
 from .evaluation import evaluate_predictions
-from .features import extract_features_from_manifest
+from .features import augment_dssp_sasa_features, extract_features_from_manifest
 from .labels import build_joined_dataset, import_cpmg_labels
 from .splits import create_sequence_splits
 from .training import train_model
@@ -32,6 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--out-qc", default=None)
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--checkpoint-every", type=int, default=100)
+    p.add_argument("--resume", action="store_true")
+
+    p = sub.add_parser("augment-dssp-sasa", help="Add DSSP and SASA to an existing feature table")
+    p.add_argument("--features", required=True)
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--pdb-root", default=None)
+    p.add_argument("--out", required=True)
+    p.add_argument("--out-qc", default=None)
+    p.add_argument("--checkpoint-every", type=int, default=100)
 
     p = sub.add_parser("extract-esm2-embeddings", help="Pre-extract frozen ESM-2 embeddings")
     p.add_argument("--manifest", required=True)
@@ -103,8 +113,20 @@ def main(argv: list[str] | None = None) -> None:
             pdb_root=args.pdb_root,
             limit=args.limit,
             out_qc=args.out_qc,
+            checkpoint_every=args.checkpoint_every,
+            resume=args.resume,
         )
         print(f"Wrote {len(features)} feature rows and {len(qc)} QC rows")
+    elif args.command == "augment-dssp-sasa":
+        features, qc = augment_dssp_sasa_features(
+            args.features,
+            args.manifest,
+            args.out,
+            pdb_root=args.pdb_root,
+            out_qc=args.out_qc,
+            checkpoint_every=args.checkpoint_every,
+        )
+        print(f"Wrote {len(features)} augmented rows and {len(qc)} QC rows")
     elif args.command == "extract-esm2-embeddings":
         index = extract_esm2_embeddings(args.manifest, args.out_dir, model_name=args.model_name, layer=args.layer, limit=args.limit)
         print(f"Wrote {len(index)} embedding files")

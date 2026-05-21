@@ -30,10 +30,25 @@ dina2 extract-sidechain-features \
   --manifest "/Users/fangruizhang/Desktop/NMR and research/esmfold_structures_package/esmfold_pdb_manifest.csv" \
   --pdb-root "/Users/fangruizhang/Desktop/NMR and research/esmfold_structures_package/esmfold_structures" \
   --out data/features/sidechain_features.csv \
-  --out-qc data/qc/sidechain_feature_qc.csv
+  --out-qc data/qc/sidechain_feature_qc.csv \
+  --checkpoint-every 100
 ```
 
-Use `--limit 20` for a smoke test.
+Use `--limit 20` for a smoke test. Use `--resume` with the same output paths to skip proteins already present in the QC file after a long extraction is interrupted.
+
+## Augment Existing Features With DSSP/SASA
+
+If sidechain geometry has already been extracted, add DSSP and SASA without recomputing contact features:
+
+```bash
+dina2 augment-dssp-sasa \
+  --features data/features/sidechain_features.csv \
+  --manifest "/Users/fangruizhang/Desktop/NMR and research/esmfold_structures_package/esmfold_pdb_manifest.csv" \
+  --pdb-root "/Users/fangruizhang/Desktop/NMR and research/esmfold_structures_package/esmfold_structures" \
+  --out data/features/sidechain_features_augmented.csv \
+  --out-qc data/qc/sidechain_feature_augmented_qc.csv \
+  --checkpoint-every 100
+```
 
 ## Extract ESM-2 Embeddings
 

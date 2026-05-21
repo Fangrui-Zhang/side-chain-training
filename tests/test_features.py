@@ -1,6 +1,6 @@
 import pandas as pd
 
-from dina2.features import extract_features_from_manifest
+from dina2.features import augment_dssp_sasa_features, extract_features_from_manifest
 
 
 PDB_TEXT = """\
@@ -38,3 +38,47 @@ def test_gly_ala_sidechain_masks(tmp_path):
     assert ala["sidechain_centroid_mask"] == 1
     assert ala["sidechain_geometry_mask"] == 1
     assert ala["chi1_mask"] == 0
+
+
+def test_augment_qc_uses_stable_columns_when_first_group_fails(tmp_path):
+    pdb = tmp_path / "toy.pdb"
+    pdb.write_text(PDB_TEXT, encoding="utf-8")
+    manifest = tmp_path / "manifest.csv"
+    pd.DataFrame(
+        {
+            "protein_id": ["toy"],
+            "entity_id": [1],
+            "sequence": ["GA"],
+            "pdb_filename": ["toy.pdb"],
+        }
+    ).to_csv(manifest, index=False)
+    features = tmp_path / "features.csv"
+    pd.DataFrame(
+        [
+            {"protein_id": "missing", "sequence_pos_1based": 1, "feature_valid_mask": 1},
+            {"protein_id": "toy", "sequence_pos_1based": 1, "feature_valid_mask": 1},
+            {"protein_id": "toy", "sequence_pos_1based": 2, "feature_valid_mask": 1},
+        ]
+    ).to_csv(features, index=False)
+
+    _, qc = augment_dssp_sasa_features(
+        features,
+        manifest,
+        tmp_path / "augmented.csv",
+        pdb_root=str(tmp_path),
+        out_qc=tmp_path / "augment_qc.csv",
+        checkpoint_every=1,
+    )
+
+    reread_qc = pd.read_csv(tmp_path / "augment_qc.csv")
+    assert list(reread_qc.columns) == [
+        "protein_id",
+        "status",
+        "reason",
+        "pdb_path",
+        "identity",
+        "coverage",
+        "dssp_reason",
+        "sasa_reason",
+    ]
+    assert qc["status"].tolist() == ["fail", "ok"]

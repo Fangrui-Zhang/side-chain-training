@@ -15,9 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 structure = [
-  "biopython==1.85",
-  "mdtraj==1.11.0",
-  "pyarrow==20.0.0",
+  "biopython==1.87",
+  "mdtraj==1.11.1.post1",
+  "freesasa==2.2.1",
+  "scipy==1.17.1",
+  "pyarrow==24.0.0",
 ]
 ml = [
   "torch==2.4.1",

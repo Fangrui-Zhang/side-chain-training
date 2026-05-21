@@ -115,6 +115,60 @@ def compute_dssp(pdb_path: str, expected_length: int) -> tuple[list[str], list[i
         return [""] * expected_length, [0] * expected_length, f"dssp_failed:{type(exc).__name__}"
 
 
+def compute_sasa(
+    pdb_path: str,
+    residues: list[Residue],
+) -> tuple[dict[str, dict[str, float | str]], str]:
+    """Compute residue SASA with Biopython Shrake-Rupley when available."""
+
+    try:
+        from Bio.PDB import PDBParser, ShrakeRupley  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        return {}, f"sasa_failed:{type(exc).__name__}"
+
+    try:
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("protein", str(pdb_path))
+        sr = ShrakeRupley()
+        sr.compute(structure, level="A")
+        sasa_by_key: dict[tuple[str, int, str], dict[str, float]] = {}
+        for chain in structure.get_chains():
+            for residue in chain:
+                hetflag, resseq, icode = residue.id
+                if hetflag.strip():
+                    continue
+                key = (str(chain.id).strip() or "A", int(resseq), str(icode).strip())
+                total = 0.0
+                sidechain = 0.0
+                for atom in residue:
+                    element = (getattr(atom, "element", "") or atom.get_name()[0]).upper()
+                    if element == "H":
+                        continue
+                    atom_sasa = float(getattr(atom, "sasa", 0.0))
+                    total += atom_sasa
+                    if atom.get_name().strip() not in {"N", "CA", "C", "O", "OXT"}:
+                        sidechain += atom_sasa
+                sasa_by_key[key] = {"total_sasa": total, "sidechain_sasa": sidechain}
+
+        out: dict[str, dict[str, float | str]] = {}
+        for residue in residues:
+            key = (residue.chain_id, residue.resseq, residue.icode.strip())
+            values = sasa_by_key.get(key)
+            if values is None:
+                continue
+            max_asa = MAX_ASA_TIEN.get(residue.aa)
+            rel = values["total_sasa"] / max_asa if max_asa else np.nan
+            out[residue.residue_id] = {
+                "total_sasa": float(values["total_sasa"]),
+                "sidechain_sasa": float(values["sidechain_sasa"]),
+                "relative_sasa": float(rel) if np.isfinite(rel) else np.nan,
+                "core_surface_flag": "core" if np.isfinite(rel) and rel < 0.20 else "surface",
+            }
+        return out, "ok"
+    except Exception as exc:  # pragma: no cover - depends on optional structure parser
+        return {}, f"sasa_failed:{type(exc).__name__}"
+
+
 def resolve_pdb_path(row: pd.Series, manifest_path: Path, pdb_root: str | None) -> Path:
     if "pdb_path" in row and pd.notna(row["pdb_path"]):
         candidate = Path(str(row["pdb_path"]))
@@ -179,6 +233,31 @@ FEATURE_COLUMNS = [
     "dssp_mask",
 ] + [f"chi{i}_{name}" for i in range(1, 5) for name in ("sin", "cos", "mask")]
 
+AUGMENT_QC_COLUMNS = [
+    "protein_id",
+    "status",
+    "reason",
+    "pdb_path",
+    "identity",
+    "coverage",
+    "dssp_reason",
+    "sasa_reason",
+]
+
+EXTRACT_QC_COLUMNS = [
+    "protein_id",
+    "pdb_path",
+    "manifest_length",
+    "pdb_length",
+    "alignment_status",
+    "alignment_reason",
+    "identity",
+    "coverage",
+    "histag_spans",
+    "dssp_reason",
+    "sasa_reason",
+]
+
 
 def extract_residue_features(
     protein_id: str,
@@ -225,6 +304,8 @@ def extract_residue_features(
     mapping = alignment.mapping_a_to_b
     dssp_codes, dssp_mask, dssp_reason = compute_dssp(str(pdb_path), len(residues))
     qc_row["dssp_reason"] = dssp_reason
+    sasa_by_residue, sasa_reason = compute_sasa(str(pdb_path), residues)
+    qc_row["sasa_reason"] = sasa_reason
 
     distance_cache: dict[tuple[int, int], float] = {}
     for i, res_i in enumerate(residues):
@@ -249,6 +330,10 @@ def extract_residue_features(
             rows.append(row)
             continue
         row.update(_features_for_residue(residue, residues, pdb_i, distance_cache))
+        sasa_values = sasa_by_residue.get(residue.residue_id)
+        if sasa_values is not None:
+            row.update(sasa_values)
+            row["sasa_mask"] = 1
         row["dssp"] = dssp_codes[pdb_i] if dssp_mask[pdb_i] else ""
         row["dssp_mask"] = int(dssp_mask[pdb_i])
         row["feature_valid_mask"] = 1
@@ -343,14 +428,56 @@ def extract_features_from_manifest(
     pdb_root: str | None = None,
     limit: int | None = None,
     out_qc: str | Path | None = None,
+    checkpoint_every: int = 100,
+    resume: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     manifest_path = Path(manifest_csv)
     manifest = pd.read_csv(manifest_path)
     if limit is not None:
         manifest = manifest.head(limit)
+    out_path = Path(out)
+    qc_path = Path(out_qc) if out_qc is not None else None
+    completed: set[str] = set()
+    if resume and qc_path is not None and qc_path.exists():
+        existing_qc = pd.read_csv(qc_path)
+        if "protein_id" in existing_qc.columns:
+            completed = set(existing_qc["protein_id"].astype(str))
+            manifest = manifest[~manifest["protein_id"].astype(str).isin(completed)]
+            print(f"Resuming: skipping {len(completed)} proteins already in {qc_path}")
+    elif not resume:
+        for path in [out_path, qc_path]:
+            if path is not None and path.exists():
+                path.unlink()
+
     rows: list[dict[str, object]] = []
     qc_rows: list[dict[str, object]] = []
-    for _, row in manifest.iterrows():
+
+    def flush() -> None:
+        nonlocal rows, qc_rows
+        if not rows and not qc_rows:
+            return
+        if rows:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            feature_chunk = pd.DataFrame(rows).reindex(columns=["protein_id", "entity_id", "sequence_pos_1based", "amino_acid", "feature_valid_mask"] + FEATURE_COLUMNS)
+            if str(out_path).endswith(".parquet"):
+                # Parquet append semantics vary by engine; keep parquet for small non-streaming runs.
+                existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+                pd.concat([existing, feature_chunk], ignore_index=True).to_parquet(out_path, index=False)
+            else:
+                feature_chunk.to_csv(out_path, index=False, mode="a", header=not out_path.exists())
+        if qc_path is not None:
+            qc_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(qc_rows).reindex(columns=EXTRACT_QC_COLUMNS).to_csv(
+                qc_path,
+                index=False,
+                mode="a",
+                header=not qc_path.exists(),
+            )
+        rows = []
+        qc_rows = []
+
+    total = len(manifest)
+    for processed, (_, row) in enumerate(manifest.iterrows(), start=1):
         protein_id = str(row["protein_id"])
         entity_id = row.get("entity_id", protein_id.split("_entity")[-1] if "_entity" in protein_id else "")
         pdb_path = resolve_pdb_path(row, manifest_path, pdb_root)
@@ -372,15 +499,128 @@ def extract_features_from_manifest(
         )
         rows.extend(feature_rows)
         qc_rows.append(qc)
-
-    features = pd.DataFrame(rows)
-    qc_df = pd.DataFrame(qc_rows)
-    Path(out).parent.mkdir(parents=True, exist_ok=True)
-    if str(out).endswith(".parquet"):
-        features.to_parquet(out, index=False)
-    else:
-        features.to_csv(out, index=False)
-    if out_qc is not None:
-        Path(out_qc).parent.mkdir(parents=True, exist_ok=True)
-        qc_df.to_csv(out_qc, index=False)
+        if checkpoint_every > 0 and processed % checkpoint_every == 0:
+            flush()
+            print(f"[{processed}/{total}] processed through {protein_id}", flush=True)
+    flush()
+    features = pd.read_csv(out_path) if out_path.exists() and not str(out_path).endswith(".parquet") else pd.DataFrame()
+    qc_df = pd.read_csv(qc_path) if qc_path is not None and qc_path.exists() else pd.DataFrame()
     return features, qc_df
+
+
+def augment_dssp_sasa_features(
+    features_csv: str | Path,
+    manifest_csv: str | Path,
+    out: str | Path,
+    pdb_root: str | None = None,
+    out_qc: str | Path | None = None,
+    checkpoint_every: int = 100,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fill DSSP/SASA columns in an existing feature table without recomputing contacts."""
+
+    features = pd.read_csv(features_csv)
+    manifest_path = Path(manifest_csv)
+    manifest = pd.read_csv(manifest_path)
+    manifest_by_id = {str(row["protein_id"]): row for _, row in manifest.iterrows()}
+
+    out_path = Path(out)
+    qc_path = Path(out_qc) if out_qc is not None else None
+    for path in [out_path, qc_path]:
+        if path is not None and path.exists():
+            path.unlink()
+
+    feature_chunks: list[pd.DataFrame] = []
+    qc_rows: list[dict[str, object]] = []
+
+    def flush() -> None:
+        nonlocal feature_chunks, qc_rows
+        if feature_chunks:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.concat(feature_chunks, ignore_index=True).to_csv(
+                out_path,
+                index=False,
+                mode="a",
+                header=not out_path.exists(),
+            )
+            feature_chunks = []
+        if qc_path is not None and qc_rows:
+            qc_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(qc_rows).reindex(columns=AUGMENT_QC_COLUMNS).to_csv(
+                qc_path,
+                index=False,
+                mode="a",
+                header=not qc_path.exists(),
+            )
+            qc_rows = []
+
+    groups = list(features.groupby("protein_id", sort=False))
+    total = len(groups)
+    for processed, (protein_id, group) in enumerate(groups, start=1):
+        row = manifest_by_id.get(str(protein_id))
+        group = group.copy()
+        for text_col in ["dssp", "core_surface_flag"]:
+            if text_col in group.columns:
+                group[text_col] = group[text_col].astype("object")
+        if row is None:
+            qc_rows.append({"protein_id": protein_id, "status": "fail", "reason": "missing_manifest_row"})
+            feature_chunks.append(group)
+            continue
+        pdb_path = resolve_pdb_path(row, manifest_path, pdb_root)
+        if not pdb_path.exists():
+            qc_rows.append({"protein_id": protein_id, "status": "fail", "reason": "pdb_not_found", "pdb_path": str(pdb_path)})
+            feature_chunks.append(group)
+            continue
+
+        residues = parse_pdb(str(pdb_path))
+        pdb_sequence = residues_to_sequence(residues)
+        manifest_sequence = str(row["sequence"]).replace(" ", "").upper()
+        alignment, align_qc = evaluate_label_to_target_alignment(manifest_sequence, pdb_sequence)
+        if align_qc.status != "pass":
+            qc_rows.append(
+                {
+                    "protein_id": protein_id,
+                    "status": "fail",
+                    "reason": align_qc.reason,
+                    "pdb_path": str(pdb_path),
+                    "identity": align_qc.identity,
+                    "coverage": align_qc.label_coverage,
+                }
+            )
+            feature_chunks.append(group)
+            continue
+
+        mapping = alignment.mapping_a_to_b
+        dssp_codes, dssp_mask, dssp_reason = compute_dssp(str(pdb_path), len(residues))
+        sasa_by_residue, sasa_reason = compute_sasa(str(pdb_path), residues)
+        for idx, feature_row in group.iterrows():
+            manifest_i = int(feature_row["sequence_pos_1based"]) - 1
+            pdb_i = mapping.get(manifest_i)
+            if pdb_i is None or pdb_i >= len(residues) or int(feature_row.get("feature_valid_mask", 0)) != 1:
+                continue
+            residue = residues[pdb_i]
+            if dssp_mask[pdb_i]:
+                group.loc[idx, "dssp"] = dssp_codes[pdb_i]
+                group.loc[idx, "dssp_mask"] = 1
+            sasa_values = sasa_by_residue.get(residue.residue_id)
+            if sasa_values is not None:
+                for key, value in sasa_values.items():
+                    group.loc[idx, key] = value
+                group.loc[idx, "sasa_mask"] = 1
+        qc_rows.append(
+            {
+                "protein_id": protein_id,
+                "status": "ok",
+                "reason": "ok",
+                "pdb_path": str(pdb_path),
+                "dssp_reason": dssp_reason,
+                "sasa_reason": sasa_reason,
+            }
+        )
+        feature_chunks.append(group)
+        if checkpoint_every > 0 and processed % checkpoint_every == 0:
+            flush()
+            print(f"[{processed}/{total}] augmented through {protein_id}", flush=True)
+    flush()
+    out_features = pd.read_csv(out_path) if out_path.exists() else pd.DataFrame()
+    out_qc_df = pd.read_csv(qc_path) if qc_path is not None and qc_path.exists() else pd.DataFrame()
+    return out_features, out_qc_df
