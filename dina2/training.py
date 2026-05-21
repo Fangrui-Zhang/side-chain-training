@@ -28,6 +28,10 @@ DEFAULT_NUMERIC_FEATURES = [
     "cation_pi_count",
     "disulfide_flag",
     "plddt",
+    "total_sasa",
+    "sidechain_sasa",
+    "relative_sasa",
+    "sasa_mask",
 ] + [f"chi{i}_{name}" for i in range(1, 5) for name in ("sin", "cos", "mask")]
 
 
