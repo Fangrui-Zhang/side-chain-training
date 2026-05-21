@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-name", default=ESM2_MODEL)
     p.add_argument("--layer", type=int, default=ESM2_LAYER)
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--start", type=int, default=None)
+    p.add_argument("--count", type=int, default=None)
+    p.add_argument("--shard-index", type=int, default=None)
+    p.add_argument("--num-shards", type=int, default=None)
+    p.add_argument("--resume", action="store_true")
 
     p = sub.add_parser("build-dataset", help="Join verified labels to feature rows")
     p.add_argument("--features", required=True)
@@ -128,7 +133,18 @@ def main(argv: list[str] | None = None) -> None:
         )
         print(f"Wrote {len(features)} augmented rows and {len(qc)} QC rows")
     elif args.command == "extract-esm2-embeddings":
-        index = extract_esm2_embeddings(args.manifest, args.out_dir, model_name=args.model_name, layer=args.layer, limit=args.limit)
+        index = extract_esm2_embeddings(
+            args.manifest,
+            args.out_dir,
+            model_name=args.model_name,
+            layer=args.layer,
+            limit=args.limit,
+            start=args.start,
+            count=args.count,
+            shard_index=args.shard_index,
+            num_shards=args.num_shards,
+            resume=args.resume,
+        )
         print(f"Wrote {len(index)} embedding files")
     elif args.command == "build-dataset":
         joined = build_joined_dataset(args.features, args.labels, args.out)

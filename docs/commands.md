@@ -58,6 +58,17 @@ dina2 extract-esm2-embeddings \
   --out-dir data/embeddings/esm2_t30_150M_UR50D_layer30
 ```
 
+For CHTC array jobs, split the manifest into deterministic shards:
+
+```bash
+dina2 extract-esm2-embeddings \
+  --manifest data/manifest/esmfold_pdb_manifest.csv \
+  --out-dir /staging/$USER/dina2-sidechain/embeddings/esm2_t30_150M_UR50D_layer30 \
+  --shard-index 0 \
+  --num-shards 20 \
+  --resume
+```
+
 This requires:
 
 ```bash
