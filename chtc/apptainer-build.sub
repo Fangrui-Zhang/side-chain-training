@@ -1,0 +1,11 @@
+log = apptainer-build.log
+
+transfer_input_files = embedding.def
+
++IsBuildJob = True
+
+request_cpus = 8
+request_memory = 24GB
+request_disk = 40GB
+
+queue

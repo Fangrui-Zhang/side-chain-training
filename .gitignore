@@ -18,6 +18,17 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+*.sif
+
+# CHTC / HTCondor artifacts
+chtc/logs/
+*.log
+*.out
+*.err
+*_$(Cluster)_$(Process)/
+job.*.log
+job.*.out
+job.*.err
 
 # OS/editor
 .DS_Store

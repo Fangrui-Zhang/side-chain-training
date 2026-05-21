@@ -1,0 +1,26 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+
+%post
+    python -m pip install --no-cache-dir \
+        numpy==2.3.5 \
+        pandas==2.2.3 \
+        transformers==4.46.3 \
+        scikit-learn==1.7.0
+
+    mkdir -p /opt/huggingface
+    HF_HOME=/opt/huggingface python - <<'PY'
+from transformers import AutoModel, AutoTokenizer
+
+model = "facebook/esm2_t30_150M_UR50D"
+AutoTokenizer.from_pretrained(model)
+AutoModel.from_pretrained(model, output_hidden_states=True)
+PY
+
+%environment
+    export HF_HOME=/opt/huggingface
+    export TRANSFORMERS_OFFLINE=1
+    export TOKENIZERS_PARALLELISM=false
+
+%runscript
+    exec "$@"

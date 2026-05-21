@@ -1,0 +1,24 @@
+executable = chtc/run_extract_esm2.sh
+arguments = $(Process) 20
+
+container_image = osdf:///chtc/staging/fzhang287/dina2_esm2.sif
+
+transfer_input_files = dina2, chtc/run_extract_esm2.sh, data/manifest/esmfold_pdb_manifest.csv
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+requirements = (HasCHTCStaging == true)
+
+output = chtc/logs/esm2.$(Cluster).$(Process).out
+error = chtc/logs/esm2.$(Cluster).$(Process).err
+log = chtc/logs/esm2.$(Cluster).log
+
++WantGPULab = true
++GPUJobLength = "short"
+
+request_gpus = 1
+request_cpus = 1
+request_memory = 8GB
+request_disk = 12GB
+
+queue 20
